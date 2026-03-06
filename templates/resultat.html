@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ca">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>InDret — Resultat: {{ nom }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" type="image/x-icon">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>InDret</h1>
+      <p class="subtitle">Corrector de format d'articles</p>
+    </header>
+
+    <div class="result-header">
+      <div class="result-meta">
+        <strong>{{ nom }}</strong>
+        {% if edicio %}<span class="tag">Edició {{ edicio }}</span>{% endif %}
+        {% if doi %}<span class="tag tag-doi">DOI {{ doi }}</span>{% endif %}
+      </div>
+      <p class="result-date">{{ data }}</p>
+    </div>
+
+    <div class="downloads">
+      <a class="btn-primary" href="{{ url_for('descarregar', sid=sid) }}">
+        Descarregar .docx corregit
+      </a>
+      <a class="btn-secondary" href="{{ url_for('descarregar_informe', sid=sid) }}">
+        Descarregar informe (.txt)
+      </a>
+    </div>
+
+    <div class="report-blocks">
+
+      <div class="report-block block-ok">
+        <h2>Canvis aplicats automàticament</h2>
+        <ul>
+          {% for item in applied %}
+            <li><span class="icon">✓</span> {{ item }}</li>
+          {% else %}
+            <li class="empty">Cap canvi registrat.</li>
+          {% endfor %}
+        </ul>
+      </div>
+
+      <div class="report-block block-warn">
+        <h2>Alertes — revisió manual necessària</h2>
+        <ul>
+          {% for item in alerts %}
+            <li><span class="icon">!</span> {{ item }}</li>
+          {% else %}
+            <li class="empty">Cap alerta detectada.</li>
+          {% endfor %}
+        </ul>
+      </div>
+
+      <div class="report-block block-pending">
+        <h2>Elements pendents (afegir per InDret)</h2>
+        <ul>
+          {% for item in pending %}
+            <li><span class="icon">○</span> {{ item }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+
+    </div>
+
+    <div class="back-link">
+      <a href="{{ url_for('index') }}">← Corregir un altre article</a>
+    </div>
+  </div>
+</body>
+</html>

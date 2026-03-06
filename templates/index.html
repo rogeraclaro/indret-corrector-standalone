@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="ca">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>InDret — Corrector d'articles</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" type="image/x-icon">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>InDret</h1>
+      <p class="subtitle">Corrector de format d'articles</p>
+    </header>
+
+    {% with missatges = get_flashed_messages() %}
+      {% if missatges %}
+        <ul class="errors">
+          {% for m in missatges %}
+            <li>{{ m }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    {% endwith %}
+
+    <form method="POST" action="/corregir" enctype="multipart/form-data">
+      <div class="field">
+        <label for="fitxer">Article (.docx)</label>
+        <input type="file" id="fitxer" name="fitxer" accept=".docx" required>
+      </div>
+
+      <div class="field">
+        <label for="edicio">Edició <span class="optional">(opcional)</span></label>
+        <input type="text" id="edicio" name="edicio" placeholder="ex: 4/2025">
+      </div>
+
+      <div class="field">
+        <label for="doi">DOI <span class="optional">(opcional)</span></label>
+        <input type="text" id="doi" name="doi" placeholder="ex: 10.31009/InDret.2025.i4.01">
+      </div>
+
+      <div class="field">
+        <label for="autor">Autor/a <span class="optional">(opcional — sobreescriu la detecció automàtica)</span></label>
+        <input type="text" id="autor" name="autor" placeholder="ex: Carla García López">
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="recepcio">Data de recepció <span class="optional">(opcional)</span></label>
+          <input type="text" id="recepcio" name="recepcio" placeholder="ex: 12 de enero de 2025">
+        </div>
+        <div class="field">
+          <label for="acceptacio">Data d'acceptació <span class="optional">(opcional)</span></label>
+          <input type="text" id="acceptacio" name="acceptacio" placeholder="ex: 3 de marzo de 2025">
+        </div>
+      </div>
+
+      <div class="field field--narrow">
+        <label for="pagina_inici">Pàgina inicial del cos <span class="optional">(opcional — per defecte 1)</span></label>
+        <input type="number" id="pagina_inici" name="pagina_inici" min="1" value="1" placeholder="1">
+      </div>
+
+      <button type="submit">Corregir article</button>
+    </form>
+  </div>
+
+  <div id="loading-overlay" hidden aria-live="polite" role="status">
+    <div class="spinner" aria-hidden="true"></div>
+    <p>Processant el document, espereu...</p>
+  </div>
+
+  <script>
+    document.querySelector('form').addEventListener('submit', function () {
+      var btn = this.querySelector('button[type="submit"]');
+      var overlay = document.getElementById('loading-overlay');
+      btn.disabled = true;
+      btn.textContent = 'Processant...';
+      overlay.hidden = false;
+    });
+
+    window.addEventListener('pageshow', function (e) {
+      if (e.persisted) {
+        document.getElementById('loading-overlay').hidden = true;
+        var btn = document.querySelector('button[type="submit"]');
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = 'Corregir article';
+        }
+      }
+    });
+  </script>
+</body>
+</html>
