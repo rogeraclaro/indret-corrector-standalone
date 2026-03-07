@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+uploads/*
+!uploads/.gitkeep
+resources/*.docx
+!resources/plantilla.docx
+resources/*.md
+.DS_Store
+*.~lock.*

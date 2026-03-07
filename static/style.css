@@ -327,3 +327,65 @@ button[type="submit"]:active {
 }
 
 .back-link a:hover { text-decoration: underline; }
+
+/* ─── Autors dinàmics ─────────────────────────────────────── */
+
+#autors-container {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.autor-pair {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.autor-pair__fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  flex: 1;
+}
+
+.btn-remove-autor {
+  flex-shrink: 0;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  color: #888;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  font-family: inherit;
+  transition: border-color 0.15s, color 0.15s;
+  align-self: flex-start;
+  margin-top: 0.55rem;
+}
+
+.btn-remove-autor:hover {
+  border-color: #c00;
+  color: #c00;
+}
+
+#btn-add-autor {
+  align-self: flex-start;
+  background: none;
+  border: 1px solid #1a3a5c;
+  color: #1a3a5c;
+  border-radius: 4px;
+  padding: 0.3rem 0.75rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  margin-top: 0.25rem;
+  transition: background 0.15s;
+}
+
+#btn-add-autor:hover {
+  background: #f0f4f8;
+}

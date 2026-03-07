@@ -41,8 +41,17 @@
       </div>
 
       <div class="field">
-        <label for="autor">Autor/a <span class="optional">(opcional — sobreescriu la detecció automàtica)</span></label>
-        <input type="text" id="autor" name="autor" placeholder="ex: Carla García López">
+        <label>Autors/es <span class="optional">(opcional — sobreescriu la detecció automàtica)</span></label>
+        <div id="autors-container">
+          <div class="autor-pair">
+            <div class="autor-pair__fields">
+              <input type="text" name="autors_nom[]" placeholder="Nom complet de l'autor/a" autocomplete="off">
+              <input type="text" name="autors_org[]" placeholder="Universitat / Institució" autocomplete="off">
+            </div>
+            <button type="button" class="btn-remove-autor" aria-label="Eliminar autor" hidden>−</button>
+          </div>
+        </div>
+        <button type="button" id="btn-add-autor">+ Afegir autor/a</button>
       </div>
 
       <div class="field-row">
@@ -71,6 +80,39 @@
   </div>
 
   <script>
+    // Gestió d'autors dinàmics
+    (function () {
+      var container = document.getElementById('autors-container');
+      var btnAdd    = document.getElementById('btn-add-autor');
+
+      function updateRemoveButtons() {
+        var pairs = container.querySelectorAll('.autor-pair');
+        pairs.forEach(function (pair, idx) {
+          pair.querySelector('.btn-remove-autor').hidden = (pairs.length === 1);
+        });
+      }
+
+      function addAutorPair() {
+        var template = container.querySelector('.autor-pair');
+        var clone = template.cloneNode(true);
+        clone.querySelectorAll('input').forEach(function (inp) { inp.value = ''; });
+        clone.querySelector('.btn-remove-autor').hidden = false;
+        clone.querySelector('.btn-remove-autor').addEventListener('click', removeAutorPair);
+        container.appendChild(clone);
+        updateRemoveButtons();
+        clone.querySelector('input').focus();
+      }
+
+      function removeAutorPair(e) {
+        e.target.closest('.autor-pair').remove();
+        updateRemoveButtons();
+      }
+
+      btnAdd.addEventListener('click', addAutorPair);
+      container.querySelector('.btn-remove-autor').addEventListener('click', removeAutorPair);
+      updateRemoveButtons();
+    })();
+
     document.querySelector('form').addEventListener('submit', function () {
       var btn = this.querySelector('button[type="submit"]');
       var overlay = document.getElementById('loading-overlay');

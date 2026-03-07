@@ -91,7 +91,6 @@ def corregir():
 
     edicio       = request.form.get('edicio', '').strip()
     doi          = request.form.get('doi', '').strip()
-    autor        = request.form.get('autor', '').strip()
     recepcio     = request.form.get('recepcio', '').strip()
     acceptacio   = request.form.get('acceptacio', '').strip()
     try:
@@ -100,14 +99,29 @@ def corregir():
             pagina_inici = 1
     except ValueError:
         pagina_inici = 1
-    stem         = Path(nom_segur).stem
+
+    # Autors: llistes paral·leles autors_nom[] i autors_org[]
+    noms = request.form.getlist('autors_nom[]')
+    orgs = request.form.getlist('autors_org[]')
+    autors = [
+        {'nom': n.strip(), 'org': orgs[i].strip() if i < len(orgs) else ''}
+        for i, n in enumerate(noms) if n.strip()
+    ]
+    if not autors:
+        autor_legacy = request.form.get('autor', '').strip()
+        if autor_legacy:
+            autors = [{'nom': autor_legacy, 'org': ''}]
+
+    stem = Path(nom_segur).stem
 
     try:
         corrector = InDretCorrector(str(input_path))
         if PLANTILLA.exists():
             out_doc, out_report = corrector.template_run(
-                str(PLANTILLA), edicio, doi, autor, recepcio, acceptacio,
+                str(PLANTILLA), edicio, doi,
+                recepcio=recepcio, acceptacio=acceptacio,
                 pagina_inici=pagina_inici,
+                autors=autors if autors else None,
             )
         else:
             out_doc, out_report = corrector.run()
@@ -133,7 +147,7 @@ def corregir():
         'pending':  corrector.report.pending,
         'edicio':     edicio,
         'doi':        doi,
-        'autor':      autor,
+        'autors':     autors,
         'recepcio':   recepcio,
         'acceptacio': acceptacio,
         'data':     datetime.now().strftime('%d/%m/%Y %H:%M'),
