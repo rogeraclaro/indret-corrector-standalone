@@ -44,7 +44,11 @@ RE_JURIS  = re.compile(r'\b(STS|STSJ|SAP|SJPI|SJP|STC|STJUE)\b')
 RE_ECLI   = re.compile(r'ECLI:[A-Z]{2}:[^:]+:\d+:[A-Z0-9.]+')
 RE_ROJ    = re.compile(r'Roj\s*:\s*\S+')
 RE_OP_CIT = re.compile(r'\bop\.?\s*cit\.?\b', re.IGNORECASE)
-RE_CAPS   = re.compile(r'^[A-ZÁÉÍÓÚÑÜÀÈÌÒÙ\s\-]+$')
+RE_CAPS    = re.compile(r'^[A-ZÁÉÍÓÚÑÜÀÈÌÒÙ\s\-]+$')
+RE_CAPTION = re.compile(
+    r'^(figura|tabla|gráfico|grafico|gràfic|cuadro|esquema|gràfica|gráfica)\s*\d',
+    re.IGNORECASE
+)
 
 BIB_KEYWORDS   = {'bibliografía', 'referencias bibliográficas', 'bibliography',
                   'referencias', 'bibliografia'}
@@ -86,6 +90,9 @@ def classify_para(para) -> str:
     ]:
         if any(v in sn for v in variants):
             return lv
+    # Peus de figura / taula / gràfic
+    if RE_CAPTION.match(text):
+        return 'caption'
     # Fallback: paràgraf curt i tot en negreta → N1 (articles sense numeració)
     if text and len(text) < 120 and para.runs:
         bold_runs = [r for r in para.runs if r.text.strip()]
@@ -695,6 +702,16 @@ class MetadataExtractor:
                             _build_index_para_elem(text, lvl)
                         )
 
+        # Calcular body_start_idx: saltar paràgrafs sectPr i de secció al principi
+        from docx.oxml.ns import qn as _qn
+        body_start = 0
+        for i, p in enumerate(doc.paragraphs):
+            if p._p.find('.//' + _qn('w:sectPr')) is not None:
+                body_start = i + 1
+            else:
+                break
+        result['body_start_idx'] = body_start
+
         return result if (result['titol'] or result['sumari']) else None
 
     def extract(self, doc) -> dict:
@@ -1057,6 +1074,87 @@ def _handle_multiline_marker(doc, marker: str, paragraphs: list):
                     return
 
 
+def _handle_autors_portada(doc, autors: list):
+    """Substitueix {{AUTOR}} i {{ORGANITZACIO}} a la portada (taula) per tots els autors.
+
+    autors: llista de dict {'nom': str, 'org': str}
+    - El primer autor substitueix els paràgrafs originals.
+    - Els autors addicionals es clonen i s'insereixen a continuació.
+    - Els autors sense org ometen el paràgraf d'organització.
+    """
+    if not autors:
+        return
+
+    # Busca els paràgrafs marcadors dins les taules
+    p_autor = None
+    p_org = None
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                paras = cell.paragraphs
+                for idx, para in enumerate(paras):
+                    if '{{AUTOR}}' in para.text and p_autor is None:
+                        p_autor = para
+                    if '{{ORGANITZACIO}}' in para.text and p_org is None:
+                        p_org = para
+
+    if p_autor is None:
+        return
+
+    def _set_para_text(para, text):
+        """Substitueix el text del primer run del paràgraf, neteja la resta."""
+        runs = para.runs
+        if runs:
+            runs[0].text = text
+            for r in runs[1:]:
+                r.text = ''
+        else:
+            r = OxmlElement('w:r')
+            t = OxmlElement('w:t')
+            t.text = text
+            t.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
+            r.append(t)
+            para._p.append(r)
+
+    def _clone_para(source_para, text):
+        """Crea un nou paràgraf clonat de source_para amb el text indicat."""
+        new_p = deepcopy(source_para._p)
+        # Substituir text al primer run clonat
+        runs = new_p.findall('.//' + qn('w:t'))
+        if runs:
+            runs[0].text = text
+            for t_elem in runs[1:]:
+                t_elem.text = ''
+        return new_p
+
+    # Primer autor: substituir in-place
+    _set_para_text(p_autor, autors[0]['nom'])
+    if p_org is not None:
+        if autors[0].get('org'):
+            _set_para_text(p_org, autors[0]['org'])
+        else:
+            _set_para_text(p_org, '')
+
+    # Autors addicionals: clonar i inserir després de p_org (o p_autor si no hi ha org)
+    anchor = p_org._p if p_org is not None else p_autor._p
+    for autor in reversed(autors[1:]):
+        if p_org is not None:
+            new_org = _clone_para(p_org, autor.get('org', ''))
+            anchor.addnext(new_org)
+        new_nom = _clone_para(p_autor, autor['nom'])
+        # Afegir espai abans de cada grup d'autor addicional (separació visual)
+        ppr = new_nom.find(qn('w:pPr'))
+        if ppr is None:
+            ppr = OxmlElement('w:pPr')
+            new_nom.insert(0, ppr)
+        sp = ppr.find(qn('w:spacing'))
+        if sp is None:
+            sp = OxmlElement('w:spacing')
+            ppr.append(sp)
+        sp.set(qn('w:before'), '120')  # ~6pt entre grups d'autor
+        anchor.addnext(new_nom)
+
+
 def _copy_numbering_from_article(orig_doc, tmpl_doc):
     """Substitueix numbering.xml de la plantilla pel de l'article original.
     Canvia tots els nivells amb format upperLetter + sufix ) a lowerLetter + .
@@ -1264,6 +1362,32 @@ def _append_body_to_template(template_doc, article_doc, body_start: int, body_en
     ]
     second_sect_para = sect_pr_paras[1] if len(sect_pr_paras) >= 2 else None
 
+    # Minimitzar l'alçada del paràgraf sectPr de l'índex per evitar pàgina en blanc.
+    # Quan l'índex omple la pàgina, aquest paràgraf buit pot desbordarse i crear-ne una.
+    if second_sect_para is not None:
+        ppr = second_sect_para.find(qn('w:pPr'))
+        if ppr is None:
+            ppr = OxmlElement('w:pPr')
+            second_sect_para.insert(0, ppr)
+        rpr = ppr.find(qn('w:rPr'))
+        if rpr is None:
+            rpr = OxmlElement('w:rPr')
+            ppr.append(rpr)
+        for tag in ('w:sz', 'w:szCs'):
+            el = rpr.find(qn(tag))
+            if el is None:
+                el = OxmlElement(tag)
+                rpr.append(el)
+            el.set(qn('w:val'), '2')  # 1pt — mínim visible
+        sp = ppr.find(qn('w:spacing'))
+        if sp is None:
+            sp = OxmlElement('w:spacing')
+            ppr.append(sp)
+        sp.set(qn('w:before'), '0')
+        sp.set(qn('w:after'), '0')
+        sp.set(qn('w:line'), '240')
+        sp.set(qn('w:lineRule'), 'auto')
+
     # Esborrar tots els elements entre el segon sectPr i el sectPr final
     if second_sect_para is not None:
         removing = False
@@ -1278,13 +1402,56 @@ def _append_body_to_template(template_doc, article_doc, body_start: int, body_en
         for elem in to_remove:
             body.remove(elem)
 
-    # Inserir els paràgrafs de l'article abans del sectPr final
+    # Inserir el cos de l'article (paràgrafs + taules) abans del sectPr final.
+    # Usem els fills directes del body de l'article per preservar taules,
+    # que NO apareixen a doc.paragraphs.
     final_sect_pr = body.find(qn('w:sectPr'))
-    paras = article_doc.paragraphs
-    for i in range(body_start, min(body_end, len(paras))):
-        elem = deepcopy(paras[i]._element)
+    art_body = article_doc.element.body
+    art_children = list(art_body)
+
+    # Mapear body_start/body_end (índexs de paràgrafs top-level) a posicions al body XML.
+    top_para_elems = [c for c in art_children if c.tag == qn('w:p')]
+
+    if body_start >= len(top_para_elems):
+        return
+    start_elem = top_para_elems[body_start]
+    start_pos  = art_children.index(start_elem)
+
+    if body_end < len(top_para_elems):
+        end_elem = top_para_elems[body_end]
+        end_pos  = art_children.index(end_elem)
+    else:
+        end_pos = next(
+            (i for i, c in enumerate(art_children) if c.tag == qn('w:sectPr')),
+            len(art_children)
+        )
+
+    first_inserted = True
+    for child in art_children[start_pos:end_pos]:
+        if child.tag == qn('w:sectPr'):
+            continue
+        elem = deepcopy(child)
         if rid_map:
             _remap_rids_in_element(elem, rid_map)
+
+        # Primer element del cos: suprimir pageBreakBefore (pot venir del
+        # paràgraf o del style Word "Heading 1"), i eliminar w:br type="page".
+        if first_inserted and elem.tag == qn('w:p'):
+            first_inserted = False
+            ppr = elem.find(qn('w:pPr'))
+            if ppr is None:
+                ppr = OxmlElement('w:pPr')
+                elem.insert(0, ppr)
+            pbf = ppr.find(qn('w:pageBreakBefore'))
+            if pbf is None:
+                pbf = OxmlElement('w:pageBreakBefore')
+                ppr.append(pbf)
+            pbf.set(qn('w:val'), 'false')
+            for r in elem.findall('.//' + qn('w:r')):
+                for br in r.findall(qn('w:br')):
+                    if br.get(qn('w:type')) == 'page':
+                        r.remove(br)
+
         if final_sect_pr is not None:
             final_sect_pr.addprevious(elem)
         else:
@@ -1400,6 +1567,38 @@ class InDretCorrector:
                 in_index = False
 
             if ptype == 'empty':
+                # Col·lapsar paràgrafs buits per evitar espai vertical extra
+                pf = para.paragraph_format
+                pf.space_before = Pt(0)
+                pf.space_after  = Pt(0)
+                set_line_spacing(para, 1.0)
+                for r in para.runs:
+                    r.font.size = Pt(1)
+                if not para.runs:
+                    pPr = para._p.find(qn('w:pPr'))
+                    if pPr is None:
+                        pPr = OxmlElement('w:pPr')
+                        para._p.insert(0, pPr)
+                    rPr = pPr.find(qn('w:rPr'))
+                    if rPr is None:
+                        rPr = OxmlElement('w:rPr')
+                        pPr.append(rPr)
+                    for tag in ('w:sz', 'w:szCs'):
+                        el = rPr.find(qn(tag))
+                        if el is None:
+                            el = OxmlElement(tag)
+                            rPr.append(el)
+                        el.set(qn('w:val'), '2')  # 1pt = 2 half-points
+                continue
+
+            if ptype == 'caption':
+                for r in para.runs:
+                    set_run_font(r, FONT_SERIF, Pt(10), bold=True, italic=False)
+                pf = para.paragraph_format
+                pf.space_before = Pt(0)
+                pf.space_after  = Pt(6)
+                set_line_spacing(para, 1.1)
+                cnt_body += 1
                 continue
 
             # ── Títols de l'índex: s'apliquen a _phase4_index, aquí saltem
@@ -1422,23 +1621,23 @@ class InDretCorrector:
                                 ilvl_el.get(qn('w:val')),
                             ))
                 set_line_spacing(para, 1.0)
-                para.paragraph_format.space_before = Pt(8)
-                para.paragraph_format.space_after  = Pt(18)
+                para.paragraph_format.space_before = Pt(6)
+                para.paragraph_format.space_after  = Pt(4)
                 cnt_h += 1
 
             elif ptype == 'h2':
                 for r in para.runs:
                     set_run_font(r, FONT_SERIF, Pt(10), bold=True, italic=False)
                 set_line_spacing(para, 1.0)
-                para.paragraph_format.space_before = Pt(6)
-                para.paragraph_format.space_after  = Pt(3)
+                para.paragraph_format.space_before = Pt(4)
+                para.paragraph_format.space_after  = Pt(2)
                 cnt_h += 1
 
             elif ptype in ('h3', 'h4'):
                 for r in para.runs:
                     set_run_font(r, FONT_SERIF, Pt(10), bold=False, italic=True)
                 set_line_spacing(para, 1.0)
-                para.paragraph_format.space_before = Pt(4)
+                para.paragraph_format.space_before = Pt(3)
                 para.paragraph_format.space_after  = Pt(2)
                 cnt_h += 1
 
@@ -1451,8 +1650,8 @@ class InDretCorrector:
                     it = bool(r.italic)
                     set_run_font(r, FONT_SERIF, Pt(10), bold=b, italic=it)
                 set_line_spacing(para, 1.1)
-                if not pf.space_after or pf.space_after.pt == 0:
-                    pf.space_after = Pt(6)
+                pf.space_before = Pt(0)
+                pf.space_after  = Pt(6)
                 cnt_body += 1
 
         # Font del número auto-generat (w:numPr) als títols N1
@@ -1462,9 +1661,28 @@ class InDretCorrector:
         # Notes al peu: font PT Serif 8,5
         self._apply_footnote_font()
 
+        # Taules del cos: font PT Serif + espai compacte
+        self._apply_table_styles()
+
         self.report.ok(f"Fonts aplicades: {cnt_h} títols, {cnt_body} paràgrafs de cos")
         self.report.ok("Cos del text → PT Serif 10, interlineat 1,1, space_after 6pt")
         self.report.ok("Títols N1 → Open Sans 11 negrita | N2 → PT Serif 10 negrita | N3/N4 → PT Serif 10 cursiva")
+
+    def _apply_table_styles(self):
+        """Aplica PT Serif 10pt i espaiat compacte a tots els paràgrafs de les
+        taules del document. doc.paragraphs no inclou cel·les de taula, per
+        tant cal iterar-les explícitament."""
+        for table in self.doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for para in cell.paragraphs:
+                        for r in para.runs:
+                            set_run_font(r, FONT_SERIF, Pt(8.5),
+                                         bold=bool(r.bold), italic=bool(r.italic))
+                        pf = para.paragraph_format
+                        pf.space_before = Pt(0)
+                        pf.space_after  = Pt(0)
+                        set_line_spacing(para, 1.0)
 
     def _fix_numpr_font(self, num_levels: set):
         """Actualitza w:abstractNum/w:lvl/w:rPr al numbering.xml per als nivells
@@ -1896,8 +2114,13 @@ class InDretCorrector:
     # ── Flux basat en plantilla ───────────────────────────────────────────────
     def template_run(self, plantilla_path: str, edicio: str = '', doi: str = '',
                      autor: str = '', recepcio: str = '', acceptacio: str = '',
-                     pagina_inici: int = 1) -> tuple[str, str]:
-        """Flux alternatiu: corregeix l'article i l'incorpora a la plantilla."""
+                     pagina_inici: int = 1,
+                     autors: list = None) -> tuple[str, str]:
+        """Flux alternatiu: corregeix l'article i l'incorpora a la plantilla.
+
+        autors: llista de dict [{'nom': str, 'org': str}, ...]. Si s'especifica,
+                té prioritat sobre el paràmetre `autor` i permet múltiples autors.
+        """
         print("  [1/5] Correccions de text (espais, cometes)")
         self._phase1_text()
         print("  [2/5] Estils tipogràfics i espaiat")
@@ -1909,13 +2132,23 @@ class InDretCorrector:
         extractor = MetadataExtractor()
         data = extractor.extract(self.doc)
 
+        # Normalitzar llista d'autors
+        if autors:
+            # Filtrar entrades buides
+            autors = [a for a in autors if a.get('nom', '').strip()]
+        if autors:
+            # La llista d'autors manual té prioritat sobre detecció automàtica
+            data['autor'] = autors[0]['nom']
+        elif autor:
+            data['autor'] = autor
+            autors = [{'nom': autor, 'org': data.get('organitzacio', '')}]
+
         # Avisos per camps no trobats
         if not data['titol']:
             self.report.warn("No s'ha pogut extreure el títol de l'article")
-        if autor:
-            data['autor'] = autor  # paràmetre manual té prioritat
         if not data['autor']:
             data['autor'] = 'Nombre Autor'
+            autors = [{'nom': 'Nombre Autor', 'org': ''}]
             self.report.warn("Autor no detectat — s'ha inserit 'Nombre Autor' com a placeholder")
         if not data['sumari']:
             self.report.warn("Sumari/Resum no detectat — verificar secció RESUMEN/SUMARIO")
@@ -1955,20 +2188,39 @@ class InDretCorrector:
         template_doc = Document(plantilla_path)
         # Reestructura capçaleres del cos amb tab stop dret abans d'omplir marcadors
         _fix_header_alignment(template_doc)
-        autor_display = data['autor'] if data['autor'] else 'Nombre Autor'
+
         edicio_display = f"InDret {edicio.replace('/', '.')}".strip() if edicio else "InDret"
+
+        # Autors per a la capçalera: "Autor1, Autor2 y Autor3" (sense organitzacions)
+        if autors and len(autors) > 1:
+            noms = [a['nom'] for a in autors]
+            autor_header = ', '.join(noms[:-1]) + ' y ' + noms[-1]
+        elif autors:
+            autor_header = autors[0]['nom']
+        else:
+            autor_header = data['autor'] if data['autor'] else 'Nombre Autor'
+
+        # Portada: substituir {{AUTOR}} i {{ORGANITZACIO}} amb tots els autors.
+        # Ho fem ABANS de _fill_template_markers per netejar els marcadors de la taula.
+        if autors:
+            _handle_autors_portada(template_doc, autors)
+        else:
+            _fill_template_markers(template_doc, {
+                '{{AUTOR}}': data['autor'],
+                '{{ORGANITZACIO}}': data.get('organitzacio', ''),
+            })
+
         markers = {
-            '{{TITOL}}':        data['titol'],
-            '{{SUBTITOL}}':     data['subtitol'],
-            '{{AUTOR}}':        autor_display,
-            '{{ORGANITZACIO}}': data['organitzacio'],
-            '{{EDICIO}}':       edicio_display,
-            '{{TITOL_EN}}':     data['titol_en'],
+            '{{TITOL}}':         data['titol'],
+            '{{SUBTITOL}}':      data['subtitol'],
+            '{{AUTOR}}':         autor_header,   # capçaleres: tots els autors
+            '{{EDICIO}}':        edicio_display,
+            '{{TITOL_EN}}':      data['titol_en'],
             '{{PARAULES_CLAU}}': data['paraules_clau'],
-            '{{KEYWORDS}}':     data['keywords'],
-            '{{DOI}}':          doi,
-            '{{DATA-RECEP}}':   recepcio,
-            '{{DATA-ACCEPT}}':  acceptacio,
+            '{{KEYWORDS}}':      data['keywords'],
+            '{{DOI}}':           doi,
+            '{{DATA-RECEP}}':    recepcio,
+            '{{DATA-ACCEPT}}':   acceptacio,
         }
         _fill_template_markers(template_doc, markers)
         _fix_cover_labels(template_doc, doi)
@@ -2046,9 +2298,14 @@ def main():
     parser.add_argument('--doi', default='',
         metavar='DOI',
         help='Identificador DOI de l\'article, p. ex. "10.31009/InDret.2024.i1.01".')
-    parser.add_argument('--autor', default='',
+    parser.add_argument('--autor', default=None,
         metavar='NOM',
-        help='Nom de l\'autor/a (sobreescriu la detecció automàtica).')
+        action='append', dest='autors_nom',
+        help='Nom de l\'autor/a. Repetible per a múltiples autors: --autor "A. García" --autor "B. López".')
+    parser.add_argument('--org', default=None,
+        metavar='INST',
+        action='append', dest='autors_org',
+        help='Institució de l\'autor/a (ordre paral·lel a --autor). Repetible.')
     parser.add_argument('--recepcio', default='',
         metavar='DATA',
         help='Data de recepció de l\'article, p. ex. "12 de enero de 2025".')
@@ -2076,11 +2333,23 @@ def main():
         print(f" Plantilla:   {plantilla_path}")
         print(f" Edició:      {args.edicio or '(no especificada)'}")
         print(f" DOI:         {args.doi or '(no especificat)'}")
-        print(f" Autor:       {args.autor or '(detecció automàtica)'}")
+        # Construir llista d'autors des dels arguments CLI
+        cli_autors = []
+        if args.autors_nom:
+            orgs = args.autors_org or []
+            for i, nom in enumerate(args.autors_nom):
+                cli_autors.append({'nom': nom, 'org': orgs[i] if i < len(orgs) else ''})
+        if cli_autors:
+            for a in cli_autors:
+                org_str = '  (' + a['org'] + ')' if a['org'] else ''
+                print(' Autor:       ' + a['nom'] + org_str)
+        else:
+            print(f" Autor:       (detecció automàtica)")
         print(f" Recepció:    {args.recepcio or '(no especificada)'}")
         print(f" Acceptació:  {args.acceptacio or '(no especificada)'}")
     else:
         print(f" Mode:     correcció directa (sense plantilla)")
+        cli_autors = []
     print("─" * 50)
 
     corrector = InDretCorrector(args.article)
@@ -2088,7 +2357,8 @@ def main():
     if plantilla_path:
         out_doc, out_report = corrector.template_run(
             plantilla_path, args.edicio, args.doi,
-            args.autor, args.recepcio, args.acceptacio
+            recepcio=args.recepcio, acceptacio=args.acceptacio,
+            autors=cli_autors if cli_autors else None,
         )
     else:
         out_doc, out_report = corrector.run()
