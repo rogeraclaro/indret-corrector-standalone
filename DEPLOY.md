@@ -24,7 +24,7 @@ sudo apt update && sudo apt install -y python3 python3-venv python3-pip
 sudo mkdir -p /opt/indret-corrector
 sudo chown $USER:$USER /opt/indret-corrector
 cd /opt/indret-corrector
-git clone https://github.com/rogeraclaro/InDret_Corrector.git .
+git clone https://github.com/rogeraclaro/indret-corrector-standalone.git .
 ```
 
 ### 3. Crear entorn virtual i instal·lar dependències
@@ -123,6 +123,14 @@ curl -s -o /dev/null -w "%{http_code}" https://indret_originals.masellas.info/
 
 ## Actualitzar el servidor (futures versions)
 
+### Al Mac (local)
+```bash
+# Des del repo principal, pujar canvis al repo standalone:
+cd "/Volumes/1Tera/Local Sites/indret-prod/app/public/wp-content/themes/indret"
+git subtree push --prefix=web standalone main
+```
+
+### Al servidor
 ```bash
 cd /opt/indret-corrector
 git pull
