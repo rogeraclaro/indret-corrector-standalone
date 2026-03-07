@@ -319,6 +319,121 @@ def _inject_footnotes(output_path: str, article_fn_xml: bytes,
         f.write(buf.getvalue())
 
 
+_R_EMBED = ('{http://schemas.openxmlformats.org/officeDocument/2006/'
+            'relationships}embed')
+_R_LINK  = ('{http://schemas.openxmlformats.org/officeDocument/2006/'
+            'relationships}link')
+
+
+def _remap_rids_in_element(elem, rid_map: dict):
+    """Substitueix r:embed i r:link en l'element i tots els descendents."""
+    for el in elem.iter():
+        for attr in (_R_EMBED, _R_LINK):
+            val = el.get(attr)
+            if val in rid_map:
+                el.set(attr, rid_map[val])
+
+
+def _read_article_media(article_path: str, start_rid: int = 500):
+    """Llegeix les relacions d'imatge i els bytes de media de l'article.
+
+    Retorna:
+        rid_map    – {old_rid: new_rid}   (rIds alts per no xocar amb la plantilla)
+        image_rels – {old_rid: (target, rel_type)}
+        media_data – {old_target: bytes}
+    """
+    IMG_TYPE     = ('http://schemas.openxmlformats.org/officeDocument/2006/'
+                    'relationships/image')
+    HDPHOTO_TYPE = 'http://schemas.microsoft.com/office/2007/relationships/hdphoto'
+    IMAGE_TYPES  = {IMG_TYPE, HDPHOTO_TYPE}
+    DOC_RELS     = 'word/_rels/document.xml.rels'
+
+    try:
+        with zipfile.ZipFile(article_path, 'r') as za:
+            if DOC_RELS not in za.namelist():
+                return {}, {}, {}
+            art_rels_root = _lxml_et.fromstring(za.read(DOC_RELS))
+            image_rels = {}
+            for rel in art_rels_root:
+                rtype = rel.get('Type', '')
+                if rtype in IMAGE_TYPES and rel.get('Target', '').startswith('media/'):
+                    image_rels[rel.get('Id')] = (rel.get('Target'), rtype)
+            if not image_rels:
+                return {}, {}, {}
+            media_data = {}
+            for _, (target, _) in image_rels.items():
+                full = f'word/{target}'
+                if full in za.namelist():
+                    media_data[target] = za.read(full)
+    except Exception:
+        return {}, {}, {}
+
+    counter = start_rid
+    rid_map = {}
+    for old_rid in image_rels:
+        rid_map[old_rid] = f'rId{counter}'
+        counter += 1
+
+    return rid_map, image_rels, media_data
+
+
+def _inject_article_media(output_path: str, rid_map: dict,
+                          image_rels: dict, media_data: dict):
+    """Afegeix les relacions i fitxers media de l'article al ZIP de sortida.
+
+    Els rIds ja han estat remapejats als elements copiats per _remap_rids_in_element.
+    Aquí només actualitzem document.xml.rels i afegim els fitxers media.
+    """
+    if not rid_map or not media_data:
+        return
+
+    DOC_RELS = 'word/_rels/document.xml.rels'
+    REL_NS   = 'http://schemas.openxmlformats.org/package/2006/relationships'
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(output_path, 'r') as zin:
+        existing_names = set(zin.namelist())
+        out_rels_root  = _lxml_et.fromstring(zin.read(DOC_RELS))
+
+        # Gestionar conflictes de nom de fitxer media
+        target_map = {}   # {old_target: new_target}
+        for old_rid, (old_target, _) in image_rels.items():
+            if old_target in target_map:
+                continue
+            full = f'word/{old_target}'
+            if full not in existing_names:
+                target_map[old_target] = old_target
+            else:
+                parts = old_target.rsplit('/', 1)
+                new_tgt = (f'{parts[0]}/art_{parts[1]}' if len(parts) == 2
+                           else f'art_{old_target}')
+                target_map[old_target] = new_tgt
+
+        with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                data = zin.read(item.filename)
+                if item.filename == DOC_RELS:
+                    for old_rid, (old_target, rtype) in image_rels.items():
+                        rel_el = _lxml_et.SubElement(out_rels_root,
+                                                     f'{{{REL_NS}}}Relationship')
+                        rel_el.set('Id',     rid_map[old_rid])
+                        rel_el.set('Type',   rtype)
+                        rel_el.set('Target', target_map[old_target])
+                    data = _lxml_et.tostring(out_rels_root, xml_declaration=True,
+                                             encoding='UTF-8', standalone=True)
+                zout.writestr(item, data)
+
+            # Afegir fitxers media (sense duplicats)
+            for old_target, new_target in target_map.items():
+                if old_target in media_data:
+                    full_new = f'word/{new_target}'
+                    if full_new not in existing_names:
+                        zout.writestr(full_new, media_data[old_target])
+
+    with open(output_path, 'wb') as f:
+        f.write(buf.getvalue())
+
+
 _RE_IDX_PREFIX = re.compile(r'^(\d+(?:\.\d+)*)[.\t\s]')
 
 
@@ -336,18 +451,30 @@ def _index_level_from_text(text: str) -> int:
     return len(m.group(1).split('.'))
 
 
-_INDEX_TEXT_START = 720  # Twips: columna on comença el text de TOTS els nivells
+_INDEX_HANGING = 480  # Twips per nivell (~0.85cm); accomoda "2.1.1." (≈410tw)
+
+
+def _index_left_for_level(level: int) -> int:
+    """Retorna w:left per al nivell donat (cascada: número de L alineat amb text de L-1).
+
+    Level 1 → left=480  (número a 0,   text a 480)
+    Level 2 → left=960  (número a 480, text a 960)
+    Level 3 → left=1440 (número a 960, text a 1440)
+    """
+    return level * _INDEX_HANGING
 
 
 def _build_index_para_elem(text: str, level: int):
     """Crea un element <w:p> net per a una entrada d'índex.
 
-    Tots els nivells comparteixen el mateix text_start (hanging indent):
-      - El número surt des del marge (first line indent = 0)
-      - El text comença a _INDEX_TEXT_START
-      - Les segones línies tornen a _INDEX_TEXT_START (wrap correcte)
+    Indentació jeràrquica per nivell (hanging indent):
+      - Level 1: número a 0, text a 360 twips
+      - Level 2: número a 567, text a 927 twips
+      - Level 3: número a 1134, text a 1494 twips
     Nivell 1: negreta cursiva. Nivell 2+: normal.
     """
+    left = _index_left_for_level(level)
+
     # Normalitzar separador: "2.1. Texto" → "2.1.\tTexto" per al tab stop
     text_norm = re.sub(r'^(\d[\d.]*)\.\s+', r'\1.\t', text)
 
@@ -362,17 +489,17 @@ def _build_index_para_elem(text: str, level: int):
     sp.set(qn('w:before'), '0')
     pPr.append(sp)
 
-    # Hanging indent: número al marge, text i wraps a _INDEX_TEXT_START
+    # Hanging indent: número al marge del nivell, text i wraps a left
     ind = OxmlElement('w:ind')
-    ind.set(qn('w:left'),    str(_INDEX_TEXT_START))
-    ind.set(qn('w:hanging'), str(_INDEX_TEXT_START))
+    ind.set(qn('w:left'),    str(left))
+    ind.set(qn('w:hanging'), str(_INDEX_HANGING))
     pPr.append(ind)
 
-    # Tab stop únic per a tots els nivells
+    # Tab stop alineat amb el text (left)
     tabs = OxmlElement('w:tabs')
     tab = OxmlElement('w:tab')
     tab.set(qn('w:val'), 'left')
-    tab.set(qn('w:pos'), str(_INDEX_TEXT_START))
+    tab.set(qn('w:pos'), str(left))
     tabs.append(tab)
     pPr.append(tabs)
 
@@ -1120,8 +1247,14 @@ def _copy_index_to_template(doc, index_paras: list, levels: list = None,
                     return  # només hi ha un {{INDEX}}
 
 
-def _append_body_to_template(template_doc, article_doc, body_start: int, body_end: int):
-    """Substitueix el cos demo de la plantilla pel cos de l'article (ja corregit)."""
+def _append_body_to_template(template_doc, article_doc, body_start: int, body_end: int,
+                             rid_map: dict | None = None):
+    """Substitueix el cos demo de la plantilla pel cos de l'article (ja corregit).
+
+    rid_map: si s'especifica, els atributs r:embed/r:link dels elements copiats
+    es remapegen als nous rIds abans d'inserir-los al template. Això evita que
+    els rIds de l'article (imatges) xoquin amb els rIds de la plantilla.
+    """
     body = template_doc.element.body
 
     # Trobar el segon paràgraf amb sectPr (salt de secció després de l'índex)
@@ -1150,6 +1283,8 @@ def _append_body_to_template(template_doc, article_doc, body_start: int, body_en
     paras = article_doc.paragraphs
     for i in range(body_start, min(body_end, len(paras))):
         elem = deepcopy(paras[i]._element)
+        if rid_map:
+            _remap_rids_in_element(elem, rid_map)
         if final_sect_pr is not None:
             final_sect_pr.addprevious(elem)
         else:
@@ -1852,10 +1987,14 @@ class InDretCorrector:
         else:
             _fill_template_markers(template_doc, {'{{INDEX}}': ''})
 
+        # Pre-llegir imatges de l'article (rId remapping al cos, evita xocs amb portada)
+        art_rid_map, art_image_rels, art_media_data = _read_article_media(str(self.path))
+
         # Afegir el cos de l'article (ja corregit) a continuació de la plantilla
         _append_body_to_template(
             template_doc, self.doc,
-            data['body_start_idx'], data['body_end_idx']
+            data['body_start_idx'], data['body_end_idx'],
+            rid_map=art_rid_map,
         )
 
         # Numeració de pàgines: peu centrat Open Sans 10pt, des de la secció del cos
@@ -1870,6 +2009,12 @@ class InDretCorrector:
                 _inject_footnotes(out_doc, article_fn_xml, article_fn_rels)
             except Exception as e:
                 self.report.warn(f"No s'han pogut injectar les notes al peu: {e}")
+
+        # Injectar imatges de l'article al ZIP de sortida
+        try:
+            _inject_article_media(out_doc, art_rid_map, art_image_rels, art_media_data)
+        except Exception as e:
+            self.report.warn(f"No s'han pogut injectar les imatges: {e}")
 
         return out_doc, out_report
 
