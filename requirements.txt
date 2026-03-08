@@ -2,3 +2,6 @@ Flask>=3.0
 Werkzeug>=3.0
 puremagic>=1.28
 gunicorn>=23.0
+python-docx>=1.1
+lxml>=5.0
+spacy>=3.7
