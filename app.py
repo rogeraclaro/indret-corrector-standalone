@@ -44,7 +44,7 @@ def validar_mime(path: Path) -> bool:
 def netejar_uploads():
     limit = datetime.now() - timedelta(minutes=30)
     for f in UPLOAD_DIR.iterdir():
-        if f.is_file():
+        if f.is_file() and f.name != '.gitkeep':
             mtime = datetime.fromtimestamp(f.stat().st_mtime)
             if mtime < limit:
                 f.unlink(missing_ok=True)
