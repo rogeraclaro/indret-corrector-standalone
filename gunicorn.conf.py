@@ -11,9 +11,8 @@ import multiprocessing
 workers = 2
 
 # ─── Xarxa ──────────────────────────────────────────────────
-# Unix socket: nginx farà de proxy cap aquí.
-# Per a proves en local sense nginx: canviar a bind = "127.0.0.1:8000"
-bind = "unix:/tmp/indret-corrector.sock"
+# Port 8090: CloudPanel fa de proxy nginx cap a aquest port.
+bind = "127.0.0.1:8090"
 
 # ─── Timeouts ───────────────────────────────────────────────
 # CRÍTIC: el corrector pot tardar 10-30 s en documents complexos.
