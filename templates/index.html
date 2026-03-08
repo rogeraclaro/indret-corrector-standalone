@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="ca">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7,21 +8,22 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" type="image/x-icon">
 </head>
+
 <body>
   <div class="container">
     <header>
       <h1>InDret</h1>
-      <p class="subtitle">Corrector de format d'articles</p>
+      <p class="subtitle">Corrector de format d'articles (Beta v1.0)</p>
     </header>
 
     {% with missatges = get_flashed_messages() %}
-      {% if missatges %}
-        <ul class="errors">
-          {% for m in missatges %}
-            <li>{{ m }}</li>
-          {% endfor %}
-        </ul>
-      {% endif %}
+    {% if missatges %}
+    <ul class="errors">
+      {% for m in missatges %}
+      <li>{{ m }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
     {% endwith %}
 
     <form method="POST" action="/corregir" enctype="multipart/form-data">
@@ -66,7 +68,8 @@
       </div>
 
       <div class="field field--narrow">
-        <label for="pagina_inici">Pàgina inicial del cos <span class="optional">(opcional — per defecte 1)</span></label>
+        <label for="pagina_inici">Pàgina inicial del cos <span class="optional">(opcional — per defecte
+            1)</span></label>
         <input type="number" id="pagina_inici" name="pagina_inici" min="1" value="1" placeholder="1">
       </div>
 
@@ -83,7 +86,7 @@
     // Gestió d'autors dinàmics
     (function () {
       var container = document.getElementById('autors-container');
-      var btnAdd    = document.getElementById('btn-add-autor');
+      var btnAdd = document.getElementById('btn-add-autor');
 
       function updateRemoveButtons() {
         var pairs = container.querySelectorAll('.autor-pair');
@@ -133,4 +136,5 @@
     });
   </script>
 </body>
+
 </html>
